@@ -6,7 +6,7 @@ pure perl static httpd / perl http web server
 所以我引用了最少的模块来确保可用性，总之就是能用就行，如果有报错就注释掉那一行也不会有太大影响。
 仅支持get方法和post上传(http://host:port/ul)
 支持autoindex自动索引文件列表(如: http://host:port/ul/)
-支持自定义正则来过滤修改指定的html文件内容后再输出
+支持自定义正则来过滤修改指定的html文件内容后再输出，比如修改页面js代码或插入链接的js/css等。
 (如果你有wget -r克隆的网站，又不想手动修改成千上万个html中的特定内容，可通过修改lazyfix中的命令来实现你的需求)
 
 my $addr = '0.0.0.0'; # 服务器的IP地址, 绑定到 'localhost' 则只允许本机访问
