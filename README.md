@@ -1,6 +1,6 @@
 ```
 # phttpd
-pure perl static httpd
+pure perl static httpd / perl http web server
 简单的perl单文件版静态httpd
 仅支持get和post上传(http://host:port/ul)
 支持autoindex自动索引文件列表
