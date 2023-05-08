@@ -1,12 +1,14 @@
 #!/bin/perl -W
 # coding: utf-8
-# 20230508.0707
-# todo: PUT/POST.string
+# 20230508.2339
+# todo: PUT/POST.string/filepath/url.GBK
 use strict;
 use warnings;
 use Socket;
 use IO::Socket::INET;
 use IO::Select;
+use Encode;
+#use URI::Escape;
 #use Time::Piece;
 
 my $srv = "Pure-Static-HTTPd";
@@ -54,6 +56,46 @@ my $now = localtime;
 print $now;
 }
 
+sub fsOut {
+	my ($str) = @_;
+	if ("$^O" eq "msys" || "$^O" eq "MSWin32") {
+		my $str_utf8 = decode("gbk", $str); $str = encode("utf-8", $str_utf8);
+	}
+	return $str;
+}
+
+sub fsIn {
+	my ($str) = @_;
+	if ("$^O" eq "msys" || "$^O" eq "MSWin32") {
+		my $str_gbk = decode("utf-8", $str); $str = encode("gbk", $str_gbk);
+	}
+	return $str;
+}
+
+sub encodeuri1 {
+	my ($str) = @_;
+	my $str_escape = uri_escape($str);
+	return $str_escape;
+}
+
+sub decodeuri1 {
+	my ($str) = @_;
+	my $str_unescape = uri_unescape($str);
+	return $str_unescape;
+}
+
+sub encodeuri {
+    my ($str) = @_;
+    $str =~ s/([^a-zA-Z0-9_.!~*'()\-\/])/sprintf("%%%02X", ord($1))/ge;
+    return $str;
+}
+
+sub decodeuri {
+    my ($str) = @_;
+    $str =~ s/%([a-fA-F0-9][a-fA-F0-9])/pack("C", hex($1))/eg;
+    return $str;
+}
+
 # my @files=dir(.); my $str=join("\n", @files); print $str;
 sub dir {
     my ($odir) = @_;
@@ -69,9 +111,9 @@ sub dir {
         my $odate = localtime((stat($opath))[9]);
         ##my $formatted_date = sprintf("%04d-%02d-%02d@%02d.%02d.%02d", $date->year+1900, $date->mon+1, $date->mday, $date->hour, $date->min, $date->sec);
         if (-d $opath){
-        	push @dresult, sprintf("%-30s %10s %25s", '<a href="./' . "$ofile" . '/">' . "$ofile" . '/</a>', $osize, $odate);
+        	push @dresult, sprintf("%-30s %10s %25s", '<a href="./' . encodeuri($ofile) . '/">' . "$ofile" . '/</a>', $osize, $odate);
         } else {
-                push @fresult, sprintf("%-30s %10s %25s", '<a href="./' . "$ofile" . '">' . "$ofile" . '</a>', $osize, $odate);
+                push @fresult, sprintf("%-30s %10s %25s", '<a href="./' . encodeuri($ofile) . '">' . "$ofile" . '</a>', $osize, $odate);
         }
     }
     push @dresult, @fresult;
@@ -95,11 +137,11 @@ sub p {
 
 # 创建监听套接字
 my $server = IO::Socket::INET->new(
-    LocalAddr => $addr,
-    LocalPort => $port,
-    Type      => SOCK_STREAM,
-    Reuse     => 1,
-    Listen    => 10,
+	LocalAddr => $addr,
+	LocalPort => $port,
+	Type      => SOCK_STREAM,
+	Reuse     => 1,
+	Listen    => 10,
 ) or die "Cannot create socket: $!";
 
 my $select = IO::Select->new($server); # 创建 IO::Select 对象并添加监听套接字
@@ -107,32 +149,33 @@ my $select = IO::Select->new($server); # 创建 IO::Select 对象并添加监听
 ti(); print "\n$srv is running on $addr:$port\n";
 
 while (1) {
-    my @ready = $select->can_read; # 非阻塞地等待读取事件
+	my @ready = $select->can_read; # 非阻塞地等待读取事件
 
-    foreach my $fh (@ready) {
-        if ($fh == $server) {
-            # 监听套接字有新连接
-            my $client = $server->accept();
-            $select->add($client); # 添加新连接到 IO::Select 对象中
-        } else {
-            # 客户端套接字有数据可读
-            my $client = $fh;
-            my $client_address = $client->peerhost();
-            my $client_port = $client->peerport();
+	foreach my $fh (@ready) {
+		if ($fh == $server) {
+			# 监听套接字有新连接
+			my $client = $server->accept();
+			$select->add($client); # 添加新连接到 IO::Select 对象中
+		} else {
+			# 客户端套接字有数据可读
+			my $client = $fh;
+			my $client_address = $client->peerhost();
+			my $client_port = $client->peerport();
 
-            print "\nREQ from $client_address:$client_port\n";
+			print "\nREQ from $client_address:$client_port\n";
 			ti(); print "\n";
-            # 读取 HTTP 请求头
-            my $request = '';
-            while (my $line = <$client>) {
-                $request .= $line;
-                last if $line =~ /^\r\n$/; # 请求头部结束标志
-            }
+			# 读取 HTTP 请求头
+			my $request = '';
+			while (my $line = <$client>) {
+				$request .= $line;
+				last if $line =~ /^\r\n$/; # 请求头部结束标志
+			}
 			print "\n$request\n";
-            # 解析请求行
-            my ($method, $path) = split /\s+/, $request; if (!defined $path) { my $path=""; } else { p "\npath: $path\n"; }
-            my ($rqurl, $search) = split /\?/, $path; if (!defined $search) { my $search=""; } else { p "\nsearch: $search\n"; }
-		##my ($qname, $qval) = split /\=/, $search; if (!defined $qname) { my $qname=""; } if (!defined $qval) { my $qval=""; } else { p "\nqval: $qval\n"; }
+			# 解析请求行
+			my ($method, $path) = split /\s+/, $request; if (!defined $path) { my $path=""; } else { p "\npath: $path\n"; }
+			$path = decodeuri($path); # 将网页编码的字符串解码成原始字符
+			my ($rqurl, $search) = split /\?/, $path; if (!defined $search) { my $search=""; } else { p "\nsearch: $search\n"; }
+			##my ($qname, $qval) = split /\=/, $search; if (!defined $qname) { my $qname=""; } if (!defined $qval) { my $qval=""; } else { p "\nqval: $qval\n"; }
 
 			if ( $method eq 'PUT') {
 			#* 处理 PUT 请求:
@@ -171,13 +214,18 @@ while (1) {
 							binmode $fh;
 							print $fh $content;
 							close $fh;
-						};         
+						};
+
+						$filepath = fsOut($filepath); $filename = fsOut($filename);
 						if ($@) {
 							# 发送 HTTP 500 响应
+							$filepath = fsOut($filepath);
 							my %resp = rc('500', "$@\n<br>Cannot save file to $filepath");
 							print $client "$resp{'header'}$resp{'html'}\n";
 							print "$resp{'header'}$resp{'html'}\n";
 						} else {
+							$filepath = fsOut($filepath);
+							$filename = fsOut($filename);
 							print "File '$filepath' uploaded successfully.\n";
 							# 发送上传成功的响应
 							my %resp = rc('200', "File uploaded: $filename\n");
@@ -186,6 +234,7 @@ while (1) {
 						}
 					} else {
 						# 解析失败，发送 400 响应
+						$filename = fsOut($filename);
 						my %resp = rc('400',"err uploading file: $filename\n<br>Cannot analyze \$header or \$payload.");
 						print $client "$resp{'header'}$resp{'html'}\n";
 						print "$resp{'header'}$resp{'html'}\n";
@@ -198,6 +247,10 @@ while (1) {
 				my $file = "$wwwroot$path";
 				my $mime_type = 'text/html';
 				my $char_set = 'utf-8';
+				# 响应头编码指定逻辑:
+				# 1.默认当作html文件处理;
+				# 2.未知文件和html指定空值，客户端遵照网页代码解析;
+				# 3.已知类型强制编码为utf-8或gbk
 				if ($file =~ /\.js$/i) {
 					$mime_type = 'text/javascript';
 				} elsif ($file =~ /\.css$/i) {
@@ -210,16 +263,16 @@ while (1) {
 					$mime_type = 'text/plain';
 				} elsif ($file =~ /\.(csv|bat|cmd|vbs|reg|ini)$/i) {
 					$mime_type = 'text/plain';
-					$char_set = 'gb18030';
+					$char_set = 'gbk';
+				} else {
+					$char_set = "";
 				}
-
-
 
 				ti(); print "\nRESP to $client_address:$client_port\n\n";
 				# 处理请求
 				if( $path eq $uploadurl ) {
 					# 创建上传页面
-					my %resp = rc('200', '<br><br><form method="POST" action="' . $uploadurl . '" enctype="multipart/form-data" id="file"><input type="file" name="file"><input type="submit"></form>');
+					my %resp = rc('200', '<br><br><form method="POST" action="' . $uploadurl . '" enctype="multipart/form-data" ' . (("$^O" eq "msys" || "$^O" eq "MSWin32") ? 'accept-charset="gbk" ' : "") . 'id="file"><input type="file" name="file"><input type="submit"></form>');
 					print $client "$resp{'header'}$resp{'html'}\n";
 					print "$resp{'header'}$resp{'html'}\n";
 				} elsif (-e $file && -f $file) {
@@ -242,7 +295,7 @@ while (1) {
 					close $fh;
 				} elsif (-e $file && -d $file) {
 					if ($indexmode == 1) {
-						my @files=dir($file); my $str=join("\n", @files);
+						my @files=dir($file); my $str=join("\n", @files); $str = fsOut($str);
 						my %resp = rc('200', '<pre style="white-space: pre-wrap; white-space: -moz-pre-wrap; word-wrap: break-word;">' . "\n" . $str . "\n<\/pre>");
 						print $client "$resp{'header'}$resp{'html'}\n";
 						print "$resp{'header'}$resp{'html'}\n";
@@ -260,15 +313,15 @@ while (1) {
 				} # GET 请求处理完毕
 			} else {
 			#* 处理未知请求:
-                # 发送 HTTP 501 响应
+				# 发送 HTTP 501 响应
 				my %resp = rc('501',"Not supported method: $method");
-                print $client "$resp{'header'}$resp{'html'}\n";
+				print $client "$resp{'header'}$resp{'html'}\n";
 				print "$resp{'header'}$resp{'html'}\n";
 				print "******** test method ********\n";
 			}
-            # 关闭客户端连接
-            $select->remove($client); # 从 IO::Select 对象中移除客户端套接字
-            close $client;
+			# 关闭客户端连接
+			$select->remove($client); # 从 IO::Select 对象中移除客户端套接字
+			close $client;
 		}
 	}
 }
