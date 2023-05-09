@@ -216,7 +216,6 @@ while (1) {
 							close $fh;
 						};
 
-						$filepath = fsOut($filepath); $filename = fsOut($filename);
 						if ($@) {
 							# 发送 HTTP 500 响应
 							$filepath = fsOut($filepath);
