@@ -1,13 +1,14 @@
 #!/bin/perl -W
 # coding: utf-8
-# 20230508.2339
-# todo: PUT/POST.string/filepath/url.GBK
+# 20230509.1355
+# todo: PUT/POST.string/POST.largeFile/RangeUpload
 use strict;
 use warnings;
 use Socket;
 use IO::Socket::INET;
 use IO::Select;
 use Encode;
+#use CGI;
 #use URI::Escape;
 #use Time::Piece;
 
@@ -52,14 +53,13 @@ return ('header', $header, 'html', $html);
 sub ti{
 my $now = localtime;
 #my $formatted_time = $now->strftime('%Y-%m-%d @ %H:%M:%S');
-#print $formatted_time;
 print $now;
 }
 
 sub fsOut {
 	my ($str) = @_;
 	if ("$^O" eq "msys" || "$^O" eq "MSWin32") {
-		my $str_utf8 = decode("gbk", $str); $str = encode("utf-8", $str_utf8);
+		my $str_uni = decode("gbk", $str); $str = encode("utf-8", $str_uni);
 	}
 	return $str;
 }
@@ -67,57 +67,45 @@ sub fsOut {
 sub fsIn {
 	my ($str) = @_;
 	if ("$^O" eq "msys" || "$^O" eq "MSWin32") {
-		my $str_gbk = decode("utf-8", $str); $str = encode("gbk", $str_gbk);
+		my $str_uni = decode("utf-8", $str); $str = encode("gbk", $str_uni);
 	}
 	return $str;
 }
 
-sub encodeuri1 {
-	my ($str) = @_;
-	my $str_escape = uri_escape($str);
-	return $str_escape;
-}
-
-sub decodeuri1 {
-	my ($str) = @_;
-	my $str_unescape = uri_unescape($str);
-	return $str_unescape;
-}
-
 sub encodeuri {
-    my ($str) = @_;
-    $str =~ s/([^a-zA-Z0-9_.!~*'()\-\/])/sprintf("%%%02X", ord($1))/ge;
-    return $str;
+	my ($str) = @_;
+	$str =~ s/([^a-zA-Z0-9_.!~*'()\-\/])/sprintf("%%%02X", ord($1))/ge;
+	return $str;
 }
 
 sub decodeuri {
-    my ($str) = @_;
-    $str =~ s/%([a-fA-F0-9][a-fA-F0-9])/pack("C", hex($1))/eg;
-    return $str;
+	my ($str) = @_;
+	$str =~ s/%([a-fA-F0-9][a-fA-F0-9])/pack("C", hex($1))/eg;
+	return $str;
 }
 
 # my @files=dir(.); my $str=join("\n", @files); print $str;
 sub dir {
-    my ($odir) = @_;
-    opendir(my $odh, $odir) or die "Can't open directory $odir: $!";
-    my @ofiles = readdir($odh);
-    closedir($odh);
-    @ofiles = sort { lc($a) cmp lc($b) } @ofiles;
-    my @dresult; my @fresult;
-    foreach my $ofile (@ofiles) {
-        my $opath = "$odir/$ofile";
-        my $osize = -d $opath ? '-' : -s $opath;
-        my $omtime = -M $opath;
-        my $odate = localtime((stat($opath))[9]);
-        ##my $formatted_date = sprintf("%04d-%02d-%02d@%02d.%02d.%02d", $date->year+1900, $date->mon+1, $date->mday, $date->hour, $date->min, $date->sec);
-        if (-d $opath){
-        	push @dresult, sprintf("%-30s %10s %25s", '<a href="./' . encodeuri($ofile) . '/">' . "$ofile" . '/</a>', $osize, $odate);
-        } else {
-                push @fresult, sprintf("%-30s %10s %25s", '<a href="./' . encodeuri($ofile) . '">' . "$ofile" . '</a>', $osize, $odate);
-        }
-    }
-    push @dresult, @fresult;
-    return @dresult;
+	my ($odir) = @_;
+	opendir(my $odh, $odir) or die "Can't open directory $odir: $!";
+	my @ofiles = readdir($odh);
+	closedir($odh);
+	@ofiles = sort { lc($a) cmp lc($b) } @ofiles;
+	my @dresult; my @fresult;
+	foreach my $ofile (@ofiles) {
+		my $opath = "$odir/$ofile";
+		my $osize = -d $opath ? '-' : -s $opath;
+		my $omtime = -M $opath;
+		my $odate = localtime((stat($opath))[9]);
+		##my $formatted_date = sprintf("%04d-%02d-%02d@%02d.%02d.%02d", $date->year+1900, $date->mon+1, $date->mday, $date->hour, $date->min, $date->sec);
+		if (-d $opath){
+			push @dresult, sprintf("%-30s %10s %25s", '<a href="./' . encodeuri($ofile) . '/">' . "$ofile" . '/</a>', $osize, $odate);
+		} else {
+			push @fresult, sprintf("%-30s %10s %25s", '<a href="./' . encodeuri($ofile) . '">' . "$ofile" . '</a>', $osize, $odate);
+		}
+	}
+	push @dresult, @fresult;
+	return @dresult;
 }
 
 sub lazyfix {
@@ -179,9 +167,9 @@ while (1) {
 
 			if ( $method eq 'PUT') {
 			#* 处理 PUT 请求:
-                # 发送 HTTP 501 响应
+				# 发送 HTTP 501 响应
 				my %resp = rc('501',"Not supported method: $method");
-                print $client "$resp{'header'}$resp{'html'}\n";
+				print $client "$resp{'header'}$resp{'html'}\n";
 				print "$resp{'header'}$resp{'html'}\n";
 				print "******** test PUT ********\n";
 			} elsif ( $method eq 'POST' ) {
@@ -243,12 +231,12 @@ while (1) {
 			#* 处理 GET 请求:
 				# 干掉用于伪动态传参的 url.location.search 字段, 防止报错找不到文件
 				if ( $path =~ m/\?.*/ ) { $path =~ s/\?.*//g; }
-				my $file = "$wwwroot$path";
+				my $file = $wwwroot . $path;
 				my $mime_type = 'text/html';
 				my $char_set = 'utf-8';
-				# 响应头编码指定逻辑:
-				# 1.默认当作html文件处理;
-				# 2.未知文件和html指定空值，客户端遵照网页代码解析;
+				# 响应头和编码指定逻辑:
+				# 1.未知文件默认当作html文件处理;
+				# 2.未知文件和html编码指定空值，客户端遵照网页代码解析;
 				# 3.已知类型强制编码为utf-8或gbk
 				if ($file =~ /\.js$/i) {
 					$mime_type = 'text/javascript';
@@ -289,7 +277,7 @@ while (1) {
 					my $resp = "HTTP/1.1 200 OK\r\n";
 					$resp .= "Content-Type: $mime_type; charset=$char_set\r\n\r\n";
 					#$resp .= "Content-Length: " . length($cat) . "\r\n";
-					print $client "$resp$cat";
+					print $client $resp . $cat;
 					print "$resp";
 					close $fh;
 				} elsif (-e $file && -d $file) {
@@ -324,4 +312,3 @@ while (1) {
 		}
 	}
 }
-
