@@ -1,18 +1,18 @@
 #!/bin/perl -W
 # coding: utf-8
-# todo: PUT/POST.string/POST.largeFile/Range.[Up||Down]Load
+# todo: PUT/POST.string/POST.largeFile/Range.[Up||Down]Load/
+#		fsIn/fsOut -> charguess
 use strict;
 use warnings;
 use Socket;
 use IO::Socket::INET;
 use IO::Select;
-use Encode;
 use Sys::Hostname;
-#use CGI;
-#use URI::Escape;
-#use Time::Piece;
+use Encode;
+use Encode::Guess;
+use POSIX qw(strftime);
 
-my $ver = '20230511.1852'; my $host = hostname;
+my $ver = '20230513.0139'; my $host = hostname;
 my $srv = "Pure-Static-HTTPd-$ver @ $host";
 my $addr = '0.0.0.0'; # 服务器的IP地址, 绑定到 'localhost' 则只允许本机访问
 my $port = 58080; # 服务器监听的本地端口号
@@ -42,19 +42,26 @@ my %codes = (
 
 # my %rc = rc('400',"test: Not supported method"); print $rc{'header'} . $rc{'html'};
 sub rc ($$) { 
-my ($code, $detail) = @_;
-my $msg = "$code " . $codes{$code};
-my $header = "HTTP/1.1 $msg\r\nContent-type: text/html\r\n\r\n";
-my $html = "<!DOCTYPE html>\n<html>\n<HEAD>\n<TITLE>$msg</TITLE>\n";
-$html .= "<META http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\n</HEAD>\n";
-$html .= "<body>\n<h1>$msg</h1>\n<h2><I>$srv</I> : <br><br>\n$detail</h2>\n</body>\n</html>\n";
-return ('header', $header, 'html', $html);
+	my ($code, $detail) = @_;
+	my $msg = "$code " . $codes{$code};
+	my $header = "HTTP/1.1 $msg\r\nContent-type: text/html\r\n\r\n";
+	my $html = "<!DOCTYPE html>\n<html>\n<HEAD>\n<TITLE>$msg</TITLE>\n";
+	$html .= "<META http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\n</HEAD>\n";
+	$html .= "<body>\n<h1>$msg</h1>\n<h2><I>$srv</I> : <br><br>\n$detail</h2>\n</body>\n</html>\n";
+	return ('header', $header, 'html', $html);
 }
 
-sub ti{
-my $now = localtime;
-#my $formatted_time = $now->strftime('%Y-%m-%d @ %H:%M:%S');
-print $now;
+sub rf {
+	my ($filename) = @_;
+	open my $fh, '<', $filename or die "Cannot open file: $!";
+	my $content = do { local $/; <$fh> };
+	close $fh;
+	return $content;
+}
+
+sub ti {
+	my $formatted_time = strftime('%Y-%m-%d@%H:%M:%S', localtime);
+	return $formatted_time;
 }
 
 sub fsOut {
@@ -85,7 +92,29 @@ sub decodeuri {
 	return $str;
 }
 
-# my @files=dir(.); my $str=join("\n", @files); print $str;
+sub chartype {
+	my ($str) = @_;
+	my $curcode = "utf-8";
+	eval {
+		Encode::decode("utf-8", $str, Encode::FB_CROAK);
+	};
+	if ($@) {
+		$curcode = "gbk";
+	}
+	return $curcode;
+}
+
+sub charguess {
+	my ($str) = @_;
+	my $curcode = "gbk";
+	my $decoder = Encode::Guess->guess($str);
+	if (ref $decoder) {
+		$curcode = $decoder->name;
+	}
+	if ("$curcode" eq "utf8") { $curcode = "utf-8"; }
+	return $curcode;
+}
+
 sub dir {
 	my ($odir) = @_;
 	opendir(my $odh, $odir) or die "Can't open directory $odir: $!";
@@ -97,12 +126,11 @@ sub dir {
 		my $opath = "$odir/$ofile";
 		my $osize = -d $opath ? '-' : -s $opath;
 		my $omtime = -M $opath;
-		my $odate = localtime((stat($opath))[9]);
-		##my $formatted_date = sprintf("%04d-%02d-%02d@%02d.%02d.%02d", $date->year+1900, $date->mon+1, $date->mday, $date->hour, $date->min, $date->sec);
+		my $odate = strftime('%Y-%m-%d@%H:%M:%S', localtime((stat($opath))[9]));
 		if (-d $opath){
-			push @dresult, sprintf("%-30s %10s %25s", '<a href="./' . encodeuri($ofile) . '/">' . "$ofile" . '/</a>', $osize, $odate);
+			push @dresult, sprintf("%-30s %10s %25s", '<a href="./' . $ofile . '/">' . "$ofile" . '/</a>', $osize, $odate);
 		} else {
-			push @fresult, sprintf("%-30s %10s %25s", '<a href="./' . encodeuri($ofile) . '">' . "$ofile" . '</a>', $osize, $odate);
+			push @fresult, sprintf("%-30s %10s %25s", '<a href="./' . $ofile . '">' . "$ofile" . '</a>', $osize, $odate);
 		}
 	}
 	push @dresult, @fresult;
@@ -135,7 +163,7 @@ my $server = IO::Socket::INET->new(
 
 my $select = IO::Select->new($server); # 创建 IO::Select 对象并添加监听套接字
 
-ti(); print "\n$srv is running on $addr:$port\n";
+print ti . "\n$srv is running on $addr:$port\n";
 
 while (1) {
 	my @ready = $select->can_read; # 非阻塞地等待读取事件
@@ -151,8 +179,7 @@ while (1) {
 			my $client_address = $client->peerhost();
 			my $client_port = $client->peerport();
 
-			print "\nREQ from $client_address:$client_port\n";
-			ti(); print "\n";
+			print "\nREQ from $client_address:$client_port [" . ti . "]\n";
 			# 读取 HTTP 请求头
 			my $request = '';
 			while (my $line = <$client>) {
@@ -161,13 +188,14 @@ while (1) {
 			}
 			print "\n$request\n";
 			# 解析请求行
-			my ($method, $path) = split /\s+/, $request; if (!defined $path) { my $path=""; } else { p "\npath: $path\n"; }
-			$path = decodeuri($path); # 将网页编码的字符串解码成原始字符
-			my ($rqurl, $search) = split /\?/, $path; if (!defined $search) { my $search=""; } else { p "\nsearch: $search\n"; }
+			my ($method, $path) = split /\s+/, $request; if (!defined $path) { my $path=""; } else { p "\npath: $path\n\n"; }
+			$path = fsIn(decodeuri($path)); # 将网页编码的字符串解码成原始字符
+			my ($rqurl, $search) = split /\?/, $path; if (!defined $search) { my $search=""; } else { p "\nsearch: $search\n\n"; }
 			##my ($qname, $qval) = split /\=/, $search; if (!defined $qname) { my $qname=""; } if (!defined $qval) { my $qval=""; } else { p "\nqval: $qval\n"; }
 
 			if ( $method eq 'PUT') {
 			#* 处理 PUT 请求:
+				print "\nRESP to $client_address:$client_port [" . ti . "]\n\n";
 				# 发送 HTTP 501 响应
 				my %resp = rc('501',"Not supported method: $method");
 				print $client "$resp{'header'}$resp{'html'}\n";
@@ -175,7 +203,8 @@ while (1) {
 				print "******** test PUT ********\n";
 			} elsif ( $method eq 'POST' ) {
 			#* 处理 POST 请求:
-			##print "\n\n========== \$request.start ==========\n$request\n========== \$request.end ==========\n\n";
+				print "\nRESP to $client_address:$client_port [" . ti . "]\n\n";
+				##print "\n\n========== \$request.start ==========\n$request\n========== \$request.end ==========\n\n";
 				my ($boundary) = $request =~ /Content-Type:\s*multipart\/form-data;\s*boundary=(\S+)/i;
 				##print "\n\n========== \$boundary: $boundary ==========\n";
 				if ($boundary && $request =~ /Content-Length:\s*(\d+)/ ) {
@@ -196,7 +225,7 @@ while (1) {
 					my (@files) = ();
 					while ($payload =~ /(?=--$boundary[\r\n]+)?Content-Disposition:\s*form-data;\s*name=\"([^\"]+)\";\s*filename=\"([^\"]+)\"[\r\n]+Content-Type:\s*(.*?)[\n\r]{4}(.*?)[\r\n]--$boundary/sg) {
 						my $name = $1;
-						my $filename = $2;
+						my $filename = fsIn($2);
 						my $content = $4;
 						push @files, {
 							name => $name,
@@ -213,29 +242,25 @@ while (1) {
 							# 保存上传的文件
 							my $filepath = $uploadpath . "/" . $file->{filename};
 							eval {
-								open my $fh, '>', $filepath or die "Cannot open file '$filepath': $!";
+								open my $fh, '>', $filepath or die "Cannot open file '" . fsOut($filepath) . "': $!";
 								binmode $fh;
 								print $fh $file->{content};
 								close $fh;
 							};
 							if ($@) {
 								# 发送 HTTP 500 响应
-								$filepath = fsOut($filepath);
-								my %resp = rc('500', "$@\n<br>Cannot save file to $filepath");
+								my %resp = rc('500', "$@\n<br>Cannot save file to '" . fsOut($filepath) . "'");
 								print $client "$resp{'header'}$resp{'html'}\n";
 								print "$resp{'header'}$resp{'html'}\n";
 								last;
 							} else {
 								# 将上传成功的文件名添加到列表
-								$filepath = fsOut($filepath);
-								$file->{filename} = fsOut($file->{filename});
-								$okfiles .= "\n<br>$file->{filename}";
-								print "File '$filepath' uploaded successfully.\n";
+								$okfiles .= "\n<br>" . fsOut($file->{filename}) . "";
+								print "File uploaded: '" . fsOut($filepath) . "'\n\n";
 							}
 						} else {
 							# 解析失败，发送 400 响应
-							$file->{filename} = fsOut($file->{filename});
-							my %resp = rc('400',"err uploading file: $file->{filename}\n<br>Cannot analyze \$header or \$payload.");
+							my %resp = rc('400',"err uploading file: " . fsOut($file->{filename}) . "\n<br>Cannot analyze \$header or \$payload.");
 							print $client "$resp{'header'}$resp{'html'}\n";
 							print "$resp{'header'}$resp{'html'}\n";
 							last;
@@ -251,15 +276,16 @@ while (1) {
 				}
 			} elsif ( $method eq 'GET' ) {
 			#* 处理 GET 请求:
-				# 干掉用于伪动态传参的 url.location.search 字段, 防止报错找不到文件
+				print "\nRESP to $client_address:$client_port [" . ti . "]\n\n";
+				# 干掉用于伪动态传参的 url?location.search 字段, 防止报错找不到文件
 				if ( $path =~ m/\?.*/ ) { $path =~ s/\?.*//g; }
 				my $file = $wwwroot . $path;
 				my $mime_type = 'text/html';
 				my $char_set = 'utf-8';
 				# 响应头和编码指定逻辑:
-				# 1.未知文件默认当作html文件处理;
-				# 2.未知文件和html编码指定空值，客户端遵照网页代码解析;
-				# 3.已知类型强制编码为utf-8或gbk
+				# 1.未知文件默认当作html文件返回客户端;
+				# 2.未知文件和html编码指定空值,客户端遵照网页代码解析;
+				# 3.文本类型编码靠猜;
 				if ($file =~ /\.js$/i) {
 					$mime_type = 'text/javascript';
 				} elsif ($file =~ /\.css$/i) {
@@ -272,16 +298,14 @@ while (1) {
 					$mime_type = 'text/plain';
 				} elsif ($file =~ /\.(csv|bat|cmd|vbs|reg|ini)$/i) {
 					$mime_type = 'text/plain';
-					$char_set = 'gbk';
 				} else {
 					$char_set = "";
 				}
 
-				ti(); print "\nRESP to $client_address:$client_port\n\n";
 				# 处理请求
 				if( $path eq $uploadurl ) {
 					# 创建上传页面
-					my %resp = rc('200', '<form method="POST" action="' . $uploadurl . '" enctype="multipart/form-data" ' . (("$^O" eq "msys" || "$^O" eq "MSWin32") ? 'accept-charset="gbk" ' : "") . 'id="file"><input type="file" name="file" multiple="multiple"><input type="submit"></form>');
+					my %resp = rc('200', '<form method="POST" action="' . $uploadurl . '" enctype="multipart/form-data" id="file"><input type="file" name="file" multiple="multiple"><input type="submit"></form>');
 					print $client "$resp{'header'}$resp{'html'}\n";
 					print "$resp{'header'}$resp{'html'}\n";
 				} elsif (-e $file && -f $file) {
@@ -291,6 +315,12 @@ while (1) {
 					while (my $line = <$fh>) {
 						$cat .= "$line";
 					}
+					close $fh;
+					# 猜文本编码, 猜不出来就当成gbk来处理
+					if ($mime_type eq 'text/plain') {
+						$char_set = charguess("$cat");
+					}
+					# 开启页面修复模式时预处理文本
 					if ($fixmode == 1 && $mime_type eq 'text/html' && $path =~ /\@/ ) {
 						$cat = lazyfix($cat);
 						print "\n$cat\n";
@@ -301,15 +331,14 @@ while (1) {
 					#$resp .= "Content-Length: " . length($cat) . "\r\n";
 					print $client $resp . $cat;
 					print "$resp";
-					close $fh;
 				} elsif (-e $file && -d $file) {
 					if ($indexmode == 1) {
-						my @files=dir($file); my $str=join("\n", @files); $str = fsOut($str);
-						my %resp = rc('200', '<pre style="white-space: pre-wrap; white-space: -moz-pre-wrap; word-wrap: break-word;">' . "\n" . $str . "\n<\/pre>");
+						my @files=dir($file); my $str=join("\n", @files);
+						my %resp = rc('200', '<pre style="white-space: pre-wrap; white-space: -moz-pre-wrap; word-wrap: break-word;">' . "\n" . fsOut($str) . "\n<\/pre>");
 						print $client "$resp{'header'}$resp{'html'}\n";
 						print "$resp{'header'}$resp{'html'}\n";
 					} else {
-					# 发送 HTTP 403 响应
+						# 发送 HTTP 403 响应
 						my %resp = rc('403', "auto index err.");
 						print $client "$resp{'header'}$resp{'html'}\n";
 						print "$resp{'header'}$resp{'html'}\n";
@@ -322,6 +351,7 @@ while (1) {
 				} # GET 请求处理完毕
 			} else {
 			#* 处理未知请求:
+				print "\nRESP to $client_address:$client_port [" . ti . "]\n\n";
 				# 发送 HTTP 501 响应
 				my %resp = rc('501',"Not supported method: $method");
 				print $client "$resp{'header'}$resp{'html'}\n";
@@ -334,4 +364,5 @@ while (1) {
 		}
 	}
 }
-
+
+
