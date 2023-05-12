@@ -1,18 +1,19 @@
 #!/bin/perl -W
 # coding: utf-8
-# 20230509.1355
-# todo: PUT/POST.string/POST.largeFile/RangeUpload
+# todo: PUT/POST.string/POST.largeFile/Range.[Up||Down]Load
 use strict;
 use warnings;
 use Socket;
 use IO::Socket::INET;
 use IO::Select;
 use Encode;
+use Sys::Hostname;
 #use CGI;
 #use URI::Escape;
 #use Time::Piece;
 
-my $srv = "Pure-Static-HTTPd";
+my $ver = '20230511.1852'; my $host = hostname;
+my $srv = "Pure-Static-HTTPd-$ver @ $host";
 my $addr = '0.0.0.0'; # 服务器的IP地址, 绑定到 'localhost' 则只允许本机访问
 my $port = 58080; # 服务器监听的本地端口号
 my $wwwroot = '.'; # 服务器根目录, '.'表示根目录为当前$(pwd)或%CD%文件夹
@@ -46,7 +47,7 @@ my $msg = "$code " . $codes{$code};
 my $header = "HTTP/1.1 $msg\r\nContent-type: text/html\r\n\r\n";
 my $html = "<!DOCTYPE html>\n<html>\n<HEAD>\n<TITLE>$msg</TITLE>\n";
 $html .= "<META http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\n</HEAD>\n";
-$html .= "<body>\n<h1>$msg</h1>\n<h2><I>$srv</I> : \n$detail</h2>\n</body>\n</html>\n";
+$html .= "<body>\n<h1>$msg</h1>\n<h2><I>$srv</I> : <br><br>\n$detail</h2>\n</body>\n</html>\n";
 return ('header', $header, 'html', $html);
 }
 
@@ -178,7 +179,7 @@ while (1) {
 				my ($boundary) = $request =~ /Content-Type:\s*multipart\/form-data;\s*boundary=(\S+)/i;
 				##print "\n\n========== \$boundary: $boundary ==========\n";
 				if ($boundary && $request =~ /Content-Length:\s*(\d+)/ ) {
-					# 从请求体中解析出文件名和文件内容
+					# 从请求体中解析出 $payload
 					my $length = $1;
 					my $read = 0;
 					my $payload = '';
@@ -190,39 +191,60 @@ while (1) {
 						$read += $bytes;
 					}
 					##print "\n\n========== \$payload.start ==========\n$payload\n========== \$payload.end ==========\n\n";
-					my ($filename) = $payload =~ /Content-Disposition:\s*form-data;\s*name=\"[^\"]+\";\s*filename=\"([^"]+)\"/i;
-					##print "\n\n========== \$filename: $filename ==========\n";
-					my ($content) = $payload =~ /$boundary[\r\n]+Content-Disposition:.*?filename=\"[^\"]+\"[\r\n]+Content-Type:.*?[\n\r]{4}(.*)[\r\n]--$boundary--/s;
-					##print "\n\n========== \$content.start ==========\n$content\n========== \$content.end ==========\n\n";
-					if ($filename && $content) {
-						# 保存上传的文件
-						my $filepath = $uploadpath . "/" . $filename;
-						eval {
-							open my $fh, '>', $filepath or die "Cannot open file '$filepath': $!";
-							binmode $fh;
-							print $fh $content;
-							close $fh;
-						};
 
-						if ($@) {
-							# 发送 HTTP 500 响应
-							$filepath = fsOut($filepath);
-							my %resp = rc('500', "$@\n<br>Cannot save file to $filepath");
-							print $client "$resp{'header'}$resp{'html'}\n";
-							print "$resp{'header'}$resp{'html'}\n";
+					# 从 $payload 中提取每个文件名和对应的文件内容, 将获取的匹配插入 @files 数组中
+					my (@files) = ();
+					while ($payload =~ /(?=--$boundary[\r\n]+)?Content-Disposition:\s*form-data;\s*name=\"([^\"]+)\";\s*filename=\"([^\"]+)\"[\r\n]+Content-Type:\s*(.*?)[\n\r]{4}(.*?)[\r\n]--$boundary/sg) {
+						my $name = $1;
+						my $filename = $2;
+						my $content = $4;
+						push @files, {
+							name => $name,
+							filename => $filename,
+							##print "\n\n========== \$filename: $filename ==========\n";
+							content => $content
+							##print "\n\n========== \$content.start ==========\n$content\n========== \$content.end ==========\n\n";
+						};
+					}
+					# 保存文件并生成上传成功的文件列表
+					my $okfiles = '';
+					for my $file (@files) {
+						if ($file->{filename} && $file->{content}) {
+							# 保存上传的文件
+							my $filepath = $uploadpath . "/" . $file->{filename};
+							eval {
+								open my $fh, '>', $filepath or die "Cannot open file '$filepath': $!";
+								binmode $fh;
+								print $fh $file->{content};
+								close $fh;
+							};
+							if ($@) {
+								# 发送 HTTP 500 响应
+								$filepath = fsOut($filepath);
+								my %resp = rc('500', "$@\n<br>Cannot save file to $filepath");
+								print $client "$resp{'header'}$resp{'html'}\n";
+								print "$resp{'header'}$resp{'html'}\n";
+								last;
+							} else {
+								# 将上传成功的文件名添加到列表
+								$filepath = fsOut($filepath);
+								$file->{filename} = fsOut($file->{filename});
+								$okfiles .= "\n<br>$file->{filename}";
+								print "File '$filepath' uploaded successfully.\n";
+							}
 						} else {
-							$filepath = fsOut($filepath);
-							$filename = fsOut($filename);
-							print "File '$filepath' uploaded successfully.\n";
-							# 发送上传成功的响应
-							my %resp = rc('200', "File uploaded: $filename\n");
+							# 解析失败，发送 400 响应
+							$file->{filename} = fsOut($file->{filename});
+							my %resp = rc('400',"err uploading file: $file->{filename}\n<br>Cannot analyze \$header or \$payload.");
 							print $client "$resp{'header'}$resp{'html'}\n";
 							print "$resp{'header'}$resp{'html'}\n";
+							last;
 						}
-					} else {
-						# 解析失败，发送 400 响应
-						$filename = fsOut($filename);
-						my %resp = rc('400',"err uploading file: $filename\n<br>Cannot analyze \$header or \$payload.");
+					}
+					
+					if ("$okfiles" ne "") {
+					# 发送上传成功的响应
+						my %resp = rc('200', "\n\nUploaded files:<br>\n$okfiles\n");
 						print $client "$resp{'header'}$resp{'html'}\n";
 						print "$resp{'header'}$resp{'html'}\n";
 					}
@@ -259,7 +281,7 @@ while (1) {
 				# 处理请求
 				if( $path eq $uploadurl ) {
 					# 创建上传页面
-					my %resp = rc('200', '<br><br><form method="POST" action="' . $uploadurl . '" enctype="multipart/form-data" ' . (("$^O" eq "msys" || "$^O" eq "MSWin32") ? 'accept-charset="gbk" ' : "") . 'id="file"><input type="file" name="file"><input type="submit"></form>');
+					my %resp = rc('200', '<form method="POST" action="' . $uploadurl . '" enctype="multipart/form-data" ' . (("$^O" eq "msys" || "$^O" eq "MSWin32") ? 'accept-charset="gbk" ' : "") . 'id="file"><input type="file" name="file" multiple="multiple"><input type="submit"></form>');
 					print $client "$resp{'header'}$resp{'html'}\n";
 					print "$resp{'header'}$resp{'html'}\n";
 				} elsif (-e $file && -f $file) {
@@ -312,3 +334,4 @@ while (1) {
 		}
 	}
 }
+
