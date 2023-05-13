@@ -12,7 +12,7 @@ use Encode;
 use Encode::Guess;
 use POSIX qw(strftime);
 
-my $ver = '20230513.0139'; my $host = hostname;
+my $ver = '20230513.2124'; my $host = hostname;
 my $srv = "Pure-Static-HTTPd-$ver @ $host";
 my $addr = '0.0.0.0'; # 服务器的IP地址, 绑定到 'localhost' 则只允许本机访问
 my $port = 58080; # 服务器监听的本地端口号
@@ -113,6 +113,19 @@ sub charguess {
 	}
 	if ("$curcode" eq "utf8") { $curcode = "utf-8"; }
 	return $curcode;
+}
+
+sub mimeguess {
+	my ($file) = @_;
+	if (-T $file) {
+		if (rf($file) =~ /^(\xef\xbb\xbf|\xfe\xff|\xff\xfe)?[\n\r\s\t\']*<[^>]+>/is) {
+			return "text/html";
+		} else {
+			return "text/plain";
+		}
+	} else {
+		return 'application/octet-stream';
+	}
 }
 
 sub dir {
@@ -255,7 +268,7 @@ while (1) {
 								last;
 							} else {
 								# 将上传成功的文件名添加到列表
-								$okfiles .= "\n<br>" . fsOut($file->{filename}) . "";
+								$okfiles .= "\n<hr>" . fsOut($file->{filename}) . "";
 								print "File uploaded: '" . fsOut($filepath) . "'\n\n";
 							}
 						} else {
@@ -269,7 +282,7 @@ while (1) {
 					
 					if ("$okfiles" ne "") {
 					# 发送上传成功的响应
-						my %resp = rc('200', "\n\nUploaded files:<br>\n$okfiles\n");
+						my %resp = rc('200', "\n\nUploaded files:<br>\n$okfiles\n<hr>");
 						print $client "$resp{'header'}$resp{'html'}\n";
 						print "$resp{'header'}$resp{'html'}\n";
 					}
@@ -281,7 +294,7 @@ while (1) {
 				if ( $path =~ m/\?.*/ ) { $path =~ s/\?.*//g; }
 				my $file = $wwwroot . $path;
 				my $mime_type = 'text/html';
-				my $char_set = 'utf-8';
+				my $char_set = '';
 				# 响应头和编码指定逻辑:
 				# 1.未知文件默认当作html文件返回客户端;
 				# 2.未知文件和html编码指定空值,客户端遵照网页代码解析;
@@ -299,7 +312,7 @@ while (1) {
 				} elsif ($file =~ /\.(csv|bat|cmd|vbs|reg|ini)$/i) {
 					$mime_type = 'text/plain';
 				} else {
-					$char_set = "";
+					$mime_type = mimeguess($file);
 				}
 
 				# 处理请求
