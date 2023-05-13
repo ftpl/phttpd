@@ -19,9 +19,9 @@ my $port = 58080; # 服务器监听的本地端口号
 my $wwwroot = '.'; # 服务器根目录, '.'表示根目录为当前$(pwd)或%CD%文件夹
 my $uploadurl = "/ul"; # 上传文件夹的web路径, 客户端请求此url时返回一个上传页面
 my $uploadpath = $wwwroot . $uploadurl; # 上传文件夹在文件系统中的路径, 比如: /tmp/upload
+my $indexmode = 1; # 是否自动索引文件列表(autoindex)
+my $infomode = 1; # 是否在控制终端显示处理细节(debug)
 my $fixmode = 1; # 页面修复模式总开关, 决定是否修改内容后再输出
-my $indexmode = 1; # 是否自动索引文件列表
-my $infomode = 1; # 是否在控制终端显示处理细节
 
 my %codes = (
 '200', 'OK',
