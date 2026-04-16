@@ -540,10 +540,10 @@ sub handle_post_upload {
     #echo "$hex"|xxd -r -p|xxd
 
 # payload切片循环逻辑:
-    # boundary+$info永远位于chunk头部;
+    # 从boundary到Content-Type(长度safeSize)永远位于chunk头部;
     # chunk内每切出一个文件后进入下一轮;
     # chunk剩余长度不足safeSize(边界长度)时加切safeSize补充;
-    # chunk不足文件大小则每轮新切chunSize做tmp_chunk,
+    # chunk不足文件大小则每轮新切chunkSize做tmp_chunk,
     # 合并当前chunk和新切下的tmp_chunk检测文件尾,
     # 如果匹配不到文件尾,将chunk写入文件,将tmp_chunk转为新chunk,
     # 如果匹配到文件尾则将文件切下来, 将剩余的部分转为新chunk.
