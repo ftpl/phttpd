@@ -10,5 +10,5 @@ pure perl static httpd / perl http web server
 使用方法:
 ~$ perl phttpd.pl
 或
-~$ forceinet=0 fixmode=0 indexmode=1 dbgtext=0 dbgheader=1 dbgpayload=0 dbgbinary=0 wwwroot="/data/data/com.termux/files/home/storage/shared/Download" phttpd.pl 127.0.0.1:65535
+~$ forceinet=0 fixmode=0 indexmode=1 dbgtext=0 dbgheader=1 dbgpayload=0 dbgbinary=0 wwwroot="~/storage/shared/Download" phttpd.pl 127.0.0.1:65535
 ```
