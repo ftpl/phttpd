@@ -641,7 +641,7 @@ while ($stat ne 'end_loop') {
         # 匹配不到文件结尾，读入下个chunk以绕过块边界
             $toread = ($chunkSize <= ($length - $read)) ? $chunkSize : ($length - $read);
             $bytes = $client->read($buftmp, $toread);
-            $read += $bytes;
+            if ($bytes) { $read += $bytes; } else { warn "\n^^[$loop]+ read err: $!\n"; last; }
             if (($buf . $buftmp) =~ $filebou) {
             # 合并块能匹配到文件尾，写入文件关闭句柄并返回主循环
                 $filetmp = $1; $cutlen = $+[1] - $-[1];
@@ -664,7 +664,7 @@ while ($stat ne 'end_loop') {
     }
 
 }
-pp "\n**<< out while ... [bytes:$bytes read:$read]\n\n";
+pp "\n**<< out while ... [bytes:" . ($bytes ? $bytes : "!") . " read:$read]\n\n";
 
     if (@uploaded) {
         my $list = join "\n<hr>", @uploaded;
