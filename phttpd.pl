@@ -1,5 +1,5 @@
 #!/bin/perl -W
-# 2026.0414.1111
+# 2026.0421.0911
 # coding: utf-8
 # todo: PUT/POST.string/Range.[Up&Down]Load/Asynchronous&non-blocking
 #
@@ -39,13 +39,16 @@ my $srv = "Pure-Static-HTTPd(flow)-$ver @ $host";
 my $ipv6L = '['; my $ipv6R = ']'; 
 my $addr = $ipv6 ? '::' : '0.0.0.0';
 my $port = 58080;
+# get响应每个连接占用内存缓冲区128k, 尚未完成的非阻塞模式:
 my $bufSize = 128 * 1024;
-# get响应每个连接占用内存缓冲区128k, 尚未完成的非阻塞模式.
+# post上传时数据流切片长度，实际内存占用最多 2*$chunkSize:
+# chunkSize在512KB~8MB范围内对HDD硬盘物理损耗和性能影响较小,
+# 小内存如msys和androidTV处理大文件失败时可考虑512*1024
 my $chunkSize = 4 * 1024 * 1024;
-# post上传时payload数据流切片长度，实际内存占用最多 2*$chunkSize
+# 解析payload时切片长度应保证至少512字节,防止头部骑在下边界:
+# 实际长度最多允许 2*$safeSize
 my $safeSize = 512;
-# 解析payload时chunk头部的boundary+content数据块至少应有512字节，防止数据骑在chunk下边界造成匹配失败. 实际$chunk长度最多 2*$safeSize
-
+# 以上三个参数,非必要尽量不要修改
 #
 # 服务器根目录, '.'表示根目录为当前$PWD或%CD%文件夹
 my $wwwroot = defined $ENV{wwwroot} ? $ENV{wwwroot} : '.'; $wwwroot =~ s/\/+$//;
@@ -269,7 +272,6 @@ sub rc {
     $html .= qq{<META http-equiv="Content-Type" content="text/html; charset=utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">\n</HEAD>\n};
     $html .= "<body>\n<h1>$msg</h1>\n<h2><I>$srv</I> : <br><br>\n$detail</h2>\n</body>\n</html>\n";
     $header .= "Content-Length: " . length($html) . "\r\n";
-    #$header .= "Connection: close\r\n\r\n";
     $header .= "\r\n";
     # 1xx,204,304 may without "Content-Length"
     if (!do {print $out $header . $html;}) { warn "\n**Failed: $!.\n"; }
@@ -404,7 +406,7 @@ sub mimeguess {
     }
     # 读取2048头字节用于检测
     my $content = rh($file, 2048);
-    return $dftmime unless defined $content && length $content;
+    return $dftmime unless (defined $content && length $content);
     # 先检测 bomb (bug: efbbbf|feff|fffe头的bin会误判)
     if ($content =~ /^(\xef\xbb\xbf|\xfe\xff|\xff\xfe)/) {
         if ($content =~ /^(\xef\xbb\xbf|\xfe\xff|\xff\xfe)(\x20\x00|\x00\x20|\x00\x09|\x09\x00|\x00\x0d|\x0d\x00|\x00\x0a|\x0a\x00)*[\n\r\s\t]*(\x00)?<[^>]+>/is) { return "text/html"; }
@@ -495,7 +497,7 @@ sub handle_get_file {
         $resp = "HTTP/1.1 200 OK\r\n";
         $resp .= "Content-Type: ${mime_type}${char_set}\r\n";
         $resp .= "Content-Length: " . ${size} . "\r\n\r\n";
-        if (!print $client $resp . $content) { warn "\n**Failed: $!.\n"; }
+        if (!print $client $resp . $content) { warn "\n**Failed: $!.\n"; return; }
         ph $resp; pt $content;
     } else {
         # 准备流式读取
@@ -508,12 +510,13 @@ sub handle_get_file {
         $resp = "HTTP/1.1 200 OK\r\n";
         $resp .= "Content-Type: ${mime_type}${char_set}\r\n";
         $resp .= "Content-Length: " . ${size} . "\r\n\r\n";
-        if (!print $client $resp . $bufhead) { warn "\n**Failed: $!.\n"; }
+        if (!print $client $resp . $bufhead) { warn "\n**Failed: $!.\n"; return; }
         ph $resp; # 控制台无法dbg整个文件, 只输出8k+2k:
         my $buf; my $last_buf; while (read($fh, $buf, $bufSize)) { $last_buf = $buf; if (!print $client $buf) { warn "\n**Failed: $!.\n"; last; } }
-        if (($mime_type =~ /^text/i && $dbgtext == 1)||($mime_type !~ /^text/i && $dbgbinary == 1)){ print $bufhead; if ($size > $headlen) { print "\n\n  ...  ...  \n\n" . substr($last_buf, -2048); } }
+        if (($mime_type =~ /^text/i && $dbgtext == 1)||($mime_type !~ /^text/i && $dbgbinary == 1)){ my $dbuf = $bufhead . (($size > $headlen) ? "\n\n  ...  ...  \n\n" . substr($last_buf, -2048) : ""); print "\nbin:\n[" . $dbuf . "]\n"; print "\nbin[hex]:\n[" . unpack('H*', $dbuf) . "]\n"; }
     }
     close $fh;
+    return;
 }
 
 # 流式处理POST上传请求, 分块接收数据和写入文件
@@ -525,28 +528,32 @@ sub handle_post_upload {
     pp "\n**match \$length: $length \n";
 
     if (!$boundary || !$length) { warn '**err: boundary/length not match. exit.\n'; rc($client, '400', "No files were processed. Invalid POST request."); return; }
-    # msys+perl_5.8 限制上传文件大小防止oom退出:
-    #if ("$^O" eq "msys" || "$^O" eq "MSWin32") { if ($length > 20971520) { warn '^^err: files larger then 20MB. exit.\n'; rc($client, '500', "^^err: msys not support files larger then 20MB."); return; } else { $chunkSize = 21 * 1024 * 1024; $safeSize = 21 * 1024 * 1024; } }
+    # 限制上传文件大小防止oom退出:
+    #if ($length > 20971520) { warn '^^err: files larger then 20MB. exit.\n'; rc($client, '500', "^^err: Not support files larger then 20MB."); return; }
 
-    my $info = qr/[\r\n]{2}Content-Disposition:\s*form-data;\s*name=\"phttpd\";\s*filename=\"([^\"]+)\"[\r\n]+Content-Type:\s*[^\r\n]+[\r\n]{4}/si;
-    my $next = qr/[\r\n]{2}--\Q$boundary\E/si;
+    # 预编译正则
+    my $bouinfo = qr/^\r\n--\Q$boundary\E\r\nContent-Disposition:\s*form-data;\s*name=\"phttpd\";\s*filename=\"([^\"]+)\"\r\nContent-Type:\s*[^\r\n]+\r\n\r\n/si;
+    my $filebou = qr/^(.*?)\r\n--\Q$boundary\E/s;
+    my $lastbuf = qr/\r\n--\Q$boundary\E--\r\n$/s;
+    my $laststr = qq{\r\n--$boundary--\r\n};
 
-    my $fh; my $filename; my $filepath; my $filetmp;
+    my $fh; my $filename; my $filepath; my $filetmp; my $cutlen;
     my @uploaded; my $buf; my $buftmp; my $read=0; my $toread=0;
     $toread = ($chunkSize <= $length) ? $chunkSize : $length;
     my $bytes = $client->read($buf, $toread);
     $buf="\r\n$buf"; $read += $bytes;
-    #pp "**\$buf: [" . unpack('H*', $buf) . "]\n";
+    #pp "**\$buf: [" . $buf . "]\n";
+    #pp "**\$buf[hex]: [" . unpack('H*', $buf) . "]\n";
     #echo "$hex"|xxd -r -p|xxd
 
-# payload切片循环逻辑:
-    # 从boundary到Content-Type(长度safeSize)永远位于chunk头部;
+# payload数据流循环切片处理逻辑:
+    # $bouinfo(长度应小于safeSize)永远位于chunk头部;
     # chunk内每切出一个文件后进入下一轮;
     # chunk剩余长度不足safeSize(边界长度)时加切safeSize补充;
-    # chunk不足文件大小则每轮新切chunkSize做tmp_chunk,
+    # chunk不足文件大小时每轮新切chunkSize做tmp_chunk,
     # 合并当前chunk和新切下的tmp_chunk检测文件尾,
-    # 如果匹配不到文件尾,将chunk写入文件,将tmp_chunk转为新chunk,
-    # 如果匹配到文件尾则将文件切下来, 将剩余的部分转为新chunk.
+    # 匹配不到文件尾时将chunk写入文件并将tmp_chunk转为新chunk,
+    # 匹配到文件尾则切下文件并将剩余的部分转为新chunk.
 
 # 4个状态机:
 my $stat='find_head'; # open_file, write_file, end_loop
@@ -557,42 +564,34 @@ while ($stat ne 'end_loop') {
     #pp "\n**file loop: $loop\n"; #pp "## mem used: " . get_memory_usage() . "KB";
     # 测试兜底, 防止无限循环
     #if ($loop > 1000) { $stat = 'end_loop'; warn "\n!! tooo much loops, break!\n"; last; }
-    # 只剩--$boundary--\r\n或最后一个切片未尾不匹配时退出while
-    if ($buf =~ /^$next--\r\n$/s) { warn "\n**end of stream.\n\n"; $stat='end_loop'; last; }
-    if ($buf !~ /$next--\r\n$/s && $read >= $length) { warn "\n^^err: illegal end of stream.\n\n"; if ($fh && $filepath) { push @uploaded, "[err]:$filepath"; close $fh; ($fh, $filename, $filepath, $buf, $buftmp) = (); }; $stat='end_loop'; last; }
+    # 完成全部读取后, 每轮先检查退出条件
+    if ($read >= $length) {
+        if ($buf eq $laststr) { warn "\n**end of stream.\n\n"; $stat='end_loop'; last; }
+        if ($buf !~ $lastbuf) { warn "\n^^err: illegal end of stream.\n\n"; if ($fh && $filepath) { push @uploaded, "[err]:$filepath"; close $fh; ($fh, $filename, $filepath, $buf, $buftmp) = (); }; $stat='end_loop'; last; }
+    }
     # 会有一次非法读取，不造为毛
     #if ($bytes == 0) { warn "\n^^err: illegal read() @ $filename.\n\n"; if ($fh && $filepath) { push @uploaded, "[err]:$filepath"; close $fh; ($fh, $filename, $filepath, $buf, $buftmp) = (); }; $stat='end_loop'; last; }
 
-# find_head: 查找头部，匹配和去掉boundary和content, 获取filename
+# find_head: 匹配头部,获取filename并切除boundary+content,
 ############
     if ($stat eq 'find_head') {
-        # 确保$buf最小长度, 防止info/next溢出chunk下边界
+        # 确保$buf最小512长度, 防止bundary+info溢出chunk下边界
         if (length($buf) < $safeSize) {
             $toread = ($safeSize <= ($length - $read)) ? $safeSize : ($length - $read);
             $bytes = $client->read($buftmp, $toread);
             $read += $bytes; $buf .= $buftmp; undef $buftmp;
         }
-     
         ##调试$buf
+        ##pp "\n**[$loop] \$buf: [" . $buf . "]\n";
         #my $dbgbuf=length($buf) > 1024 ? substr($buf, 0, 512) . "\n\n  ...  ...  \n\n" . substr($buf, -512) : $buf;
-        # 开头是boundary, 干掉
-        if ($buf =~ s/^$next//) {
-            ##pp "\n**[$loop]match \$buf: [" . $buf . "]\n";
-            #pp "\n**match \$buf: [" . $dbgbuf . "]\n";
-            #pp "\n**match \$buf[hex]: [" . unpack('H*', $dbgbuf) . "]\n";
-            if ($buf =~ s/^$info//s) {
-                $filename = $1;
-                ph "\n##[$loop]match \$filename: '$filename'\n";
-            } else {
-                ph "\n^^[$loop] err: \$info not match filename.\n\n";
-                rc($client, '400', "^^[$loop] err: \$info not match filename.\n");
-                return;
-            }
+        #pp "\n**[$loop] \$dbgbuf: [" . $dbgbuf . "]\n";
+        #pp "\n**[$loop] \$dbgbuf[hex]: [" . unpack('H*', $dbgbuf) . "]\n";
+        if ($buf =~ $bouinfo) {
+            $filename = $1; $cutlen = $+[0] - $-[0];
+            substr($buf, 0, $cutlen) = ''; ($cutlen) = ();
+            ph "\n##[$loop]match \$filename: '$filename'\n";
         } else {
-            #pp "\n^^[$loop] err: \$buf: [" . $dbgbuf . "]\n";
-            #pp "\n^^[$loop] err: \$buf[hex]: [" . unpack('H*', $dbgbuf) . "]\n";
-            ph "\n^^[$loop] err: \$next not match chunck head.\n\n";
-            rc($client, '400', "^^[$loop] err: \$next not match chunck head.\n");
+            ph "\n^^[$loop] err: \$bouinfo not match filename.\n\n";
             return;
         }
         if ($filename) { $stat='open_file'; }
@@ -603,20 +602,23 @@ while ($stat ne 'end_loop') {
     # 未打开句柄,计算文件名和路径并创建新文件
     if ($stat eq 'open_file') {
         #pp "\n**[$loop]\$fh orig_name: '$filename'\n";
-        my $origfn = $filename; $filename = safename($filename);
+        my $origfn = $filename;
+        $filename = safename($filename);
+        $filename = fsIn($filename);
+        $filepath = "$uploaddir/$filename";
         if (!$filename) {
             pp "\n^^[$loop] err: Invalid Filename: '$origfn'\n\n";
             rc($client, '400', "[$loop]Invalid File Name: '$origfn': $!\n");
             return;
         }
-        $filename = fsIn($filename);
-        $filepath = "$uploaddir/$filename";
         if (!open($fh, '>:raw', $filepath)) {
             pp "\n^^[$loop] err: Open \$fh path: '$filepath'\n\n";
             rc($client, '500', "[$loop]Cannot open file: '$filepath': $!\n");
             return;
-        } else { pp "\n##[$loop]opened \$fh: '$filepath'\n"; }
-        if ($fh && $filepath) { $stat='write_file'; }
+        } else {
+            pp "\n##[$loop]opened \$fh: '$filepath'\n";
+            $stat='write_file';
+        }
     }
 
 # write_file
@@ -624,36 +626,36 @@ while ($stat ne 'end_loop') {
     # 写入和关闭$fh失败后统一用last退出, 否则每次return之前需要先发rc响应.
     # 已打开句柄和路径，文件未完成，继续写入
     if ($stat eq 'write_file') {
-        if ($buf =~ /(.*?)$next/s) {
+        if ($buf =~ $filebou) {
         # 匹配到文件结尾，结束写入，返回while继续切削下一个文件
-            $filetmp = $1;
-            pp "\n**[$loop] writing " . length($filetmp) . " bytes to file: ['$filepath']\n";
+            $filetmp = $1; $cutlen = $+[1] - $-[1];
+            pp "\n**[$loop] writing " . $cutlen . " bytes to file: ['$filepath']\n";
             print $fh $filetmp or do { warn "\n^^[$loop] err: write file['$filepath']: $!\n\n"; last; };
             close $fh or do { warn "\n^^[$loop] err: close file['$filepath']: $!\n\n"; last; };
             ph "\n@@[$loop] Uploaded: '$filepath'\n\n";
             push @uploaded, $filename;
-            substr($buf, 0, length($filetmp)) = '';
-            ($fh, $filename, $filepath, $filetmp) = ();
+            substr($buf, 0, $cutlen) = '';
+            ($fh, $filename, $filepath, $filetmp, $cutlen) = ();
             $stat='find_head'; next;
         } else {
-        # 匹配不到文件结尾，读入下个切片以绕过块边界
+        # 匹配不到文件结尾，读入下个chunk以绕过块边界
             $toread = ($chunkSize <= ($length - $read)) ? $chunkSize : ($length - $read);
             $bytes = $client->read($buftmp, $toread);
             $read += $bytes;
-            if (($buf . $buftmp) =~ /(.*?)$next/s) {
+            if (($buf . $buftmp) =~ $filebou) {
             # 合并块能匹配到文件尾，写入文件关闭句柄并返回主循环
-                $filetmp = $1;
-                pp "\n**[$loop]+ writing " . length($filetmp) . " bytes to file: ['$filepath']\n";
+                $filetmp = $1; $cutlen = $+[1] - $-[1];
+                pp "\n**[$loop]+ writing " . $cutlen . " bytes to file: ['$filepath']\n";
                 print $fh $filetmp or do { warn "\n^^[$loop]+ err: write file['$filepath']: $!\n\n"; last; };
                 close $fh or do { warn "\n^^[$loop]+ err: close file['$filepath']: $!\n\n"; last; };
                 ph "\n@@[$loop]+ Uploaded: '$filepath'\n\n";
                 push @uploaded, $filename;
-                $buf .= $buftmp; substr($buf, 0, length($filetmp)) = '';
-                ($fh, $filename, $filepath, $buftmp) = ();
+                $buf .= $buftmp; substr($buf, 0, $cutlen) = '';
+                ($fh, $filename, $filepath, $buftmp, $cutlen) = ();
                 $stat='find_head'; next;
             } else {
-            # 合并块匹配不到文件尾，将$buf写入文件，将下一块读入$buf
-                pp "\n**[$loop]++ writing " . length($buf) . " bytes to file: ['$filepath']\n";
+            # 合并块匹配不到文件尾，将$buf写入文件，将chunk读入$buf
+                $dbgpayload && pp "\n**[$loop]++ writing " . length($buf) . " bytes to file: ['$filepath']\n";
                 print $fh $buf or do { warn "\n^^[$loop]++ err: write file['$filepath']: $!\n\n"; last; };
                 $buf = $buftmp; undef $buftmp;
                 $stat='write_file'; next;
@@ -670,7 +672,7 @@ pp "\n**<< out while ... [bytes:$bytes read:$read]\n\n";
     } else {
         rc($client, '500', "err uploading file: Cannot analyze \$header or \$payload or \$fh cannot be write or close.");
     }
-
+return;
 }
 
 # 创建监听套接字
@@ -745,8 +747,8 @@ while (1) {
             $path = fsIn(decodeuri($path)); 
             # 打印客户端请求日志及请求头
             print "\n*REQ «from $client_address:$client_port [" . ti . "]\n";
-            #ph "\n$method, $path, $version\n\n";
-            ph "\n$request\n";
+            ph "\n$method, $path, $version\n\n";
+            #ph "\n$request\n";
             # 开始响应请求
             print "*RESP >>to $client_address:$client_port [" . ti . "]\n\n";
             if ( $method eq 'POST' ) {
@@ -816,7 +818,7 @@ while (1) {
 #   5. print $client $buf 无回调和状态监控，可显式设置$client->blocking(1)阻塞, 不可设置非阻塞模式, 否则客户端将被频繁断开连接(Try again)造成下载失败. 同理, $SIG{PIPE} = 'IGNORE' 防止输出失败时退出while造成服务终止.
 #   6. get 缓冲区设置: (50KB[每连接基础开销]+$bufSize[GET缓冲区])*1000[并发数]=1GiB[可用RAM]*1024*1024*0.25[1/4给下载,1/4上传] => bufSize=212KB, 故$bufSize设置为64-128KB(4k对齐).
 #   7. perl5.8服务器读取全部post数据后不可再次调用 $client->read, 否则socket中没有更多数据会导致read阻塞形成死锁,客户端将无限等待响应直到超时, 无法正常跳转状态.
-#   8. 注意handle_post/get函数内如果要用return, 一定要提前返回rc响应, 防止浏览器无限等待.
-#   9. msys+perl-5.8 先天内存使用限制, post上传单次传输的单个文件大小和总文件大小都不能超过23MB左右(oom报的可用内存的1/10), 否则要么服务器卡死，要么oom退出. 目前无解. 只能先将$chunkSize和$safeSize都设置为24M并上传小于23M的文件. 打开handle_post_upload函数中注释掉的相应行, 可开启服务端数据长度限制, 防止oom.
+#   8. 注意handle_post函数内如果要用return, 一般要提前返回rc响应, 防止浏览器无限等待. handle_get内return如果是因为客户端关闭,则不必rc.
+#   9. msys+perl-5.8 先天内存使用限制, 之前post上传单次传输的单个文件大小和总文件大小都不能超过23MB左右(oom报的可用内存的1/10), 否则要么服务器卡死，要么oom退出. 目前已优化正则和循环语句, 用1g文件测试上传成功, 但是处理速度很慢.
 #
 
