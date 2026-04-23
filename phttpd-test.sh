@@ -3,8 +3,8 @@
 #
 test1="測試壹\r\n測試壹\n\n"; # 9dbab0b921c6344e999f8051886f6ba0
 test2="测试二\r\n测试二\r\r"; # 88f7026b72b440862dbcd10777fa5ab6
-tfile1="/data/data/com.termux/files/home/phttpd-testfile1.bin";
-tfile2="/data/data/com.termux/files/home/phttpd-testfile2.bin";
+tfile1="/data/data/com.termux/files/home/phttpd-測試1.bin";
+tfile2="/data/data/com.termux/files/home/phttpd-测试2.bin";
 wwwroot="/data/data/com.termux/files/home/storage/shared/Download";
 uplddir="${wwwroot}/ul";
 workdir="${tfile1%/*}";
